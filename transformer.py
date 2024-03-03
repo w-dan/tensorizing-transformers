@@ -18,7 +18,7 @@ class SelfAttention(nn.Module):
 
     def forward(self, values, keys, query, mask):
         N = query.shape[0]          # number of training samples
-        value_len, key_len, query_len = values.shape[1], keys.shape[1], queries.shape[1]
+        value_len, key_len, query_len = values.shape[1], keys.shape[1], query.shape[1]
 
         # split embedding into self.heads pieces
         values = values.reshape(N, value_len, self.heads, self.head_dim)
@@ -26,7 +26,7 @@ class SelfAttention(nn.Module):
         queries = query.reshape(N, query_len, self.heads, self.head_dim)
 
         # einsum so no batch matrix multiplication (torch.bmm) is needed
-        energy = torch.einsum("nqhd,nkhd-->nhqk")
+        energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
         # queries shape: (N, query_len,  heads, heads_dim)
         # keys shape: (N, key_len,  heads, heads_dim)
         # energy shape (N, heads, query_len, key_len)
@@ -38,7 +38,7 @@ class SelfAttention(nn.Module):
         attention = torch.softmax(energy / (self.embed_size ** (1/2)), dim=3)
 
         # n (batch size), heads, query_len, l (dimension we want to multiply across)
-        out = torch.einsum("nhql,nlhd-->nqhd", [attention, values]).reshape(
+        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(
             N, query_len, self.heads*self.head_dim
         )                                
         # attention shape: (N, heads, query_len, key_len)
@@ -178,6 +178,7 @@ class Decoder(nn.Module):
             x = layer(x, enc_out, enc_out, src_mask, trg_mask)
         
         out = self.fc_out(x)
+        return out
 
     
 
@@ -193,7 +194,7 @@ class Transformer(nn.Module):
         forward_expansion=4,
         heads=8,
         dropout=0,
-        device="cuda",
+        device=("cuda" if torch.cuda.is_available() else "cpu"),            # cuda
         max_length=100
     ):
         super(Transformer, self).__init__()
@@ -250,7 +251,7 @@ class Transformer(nn.Module):
 
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu") #("cuda" if torch.cuda.is_available() else "cpu")
     x = torch.tensor([[1, 5, 6, 4, 3, 9, 5, 2, 0], [1, 8, 7, 3, 4, 5, 6, 7, 2]]).to(device)
     trg = torch.tensor([[1, 7, 4, 3, 5, 9, 2, 0], [1, 5, 6, 2, 4, 7, 6, 2]]).to(device)
 
@@ -261,4 +262,5 @@ if __name__ == "__main__":
     
     model = Transformer(src_vocab_size, trg_vocab_size, src_pad_idx, trg_pad_idx).to(device)
     out = model(x, trg[:, :-1])
+
     print(out.shape)
