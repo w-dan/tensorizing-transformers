@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class SelfAttention(nn.Module):
     def __init__(self, embed_size, heads):
@@ -16,36 +17,67 @@ class SelfAttention(nn.Module):
         self.fc_out = nn.Linear(heads*self.head_dim, embed_size, bias=False)
 
 
+    # def forward(self, values, keys, query, mask):
+    #     N = query.shape[0]          # number of training samples
+    #     value_len, key_len, query_len = values.shape[1], keys.shape[1], query.shape[1]
+
+    #     # split embedding into self.heads pieces
+    #     values = values.reshape(N, value_len, self.heads, self.head_dim)
+    #     keys = keys.reshape(N, key_len, self.heads, self.head_dim)
+    #     queries = query.reshape(N, query_len, self.heads, self.head_dim)
+
+    #     # einsum so no batch matrix multiplication (torch.bmm) is needed
+    #     energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
+    #     # queries shape: (N, query_len,  heads, heads_dim)
+    #     # keys shape: (N, key_len,  heads, heads_dim)
+    #     # energy shape (N, heads, query_len, key_len)
+
+    #     if mask is not None:
+    #         energy = energy.masked_fill(mask == 0, float("-1e20"))              # minus infinity (very small value)
+    #                                                                             # minus infinity will be set to 0 on softmax
+
+    #     attention = torch.softmax(energy / (self.embed_size ** (1/2)), dim=3)
+
+    #     # n (batch size), heads, query_len, l (dimension we want to multiply across)
+    #     out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(
+    #         N, query_len, self.heads*self.head_dim
+    #     )                                
+    #     # attention shape: (N, heads, query_len, key_len)
+    #     # values shape: (N, value_len, heads, heads_dim)
+    #     # out shape: (N, query_len, heads, head_dim) then flatten last 2 dimensions
+
+    #     out = self.fc_out(out)              # maps embed size
+    #     return out
+
     def forward(self, values, keys, query, mask):
-        N = query.shape[0]          # number of training samples
+        N = query.shape[0]  # number of training samples
         value_len, key_len, query_len = values.shape[1], keys.shape[1], query.shape[1]
 
-        # split embedding into self.heads pieces
+        # Split embedding into self.heads pieces
         values = values.reshape(N, value_len, self.heads, self.head_dim)
         keys = keys.reshape(N, key_len, self.heads, self.head_dim)
         queries = query.reshape(N, query_len, self.heads, self.head_dim)
 
-        # einsum so no batch matrix multiplication (torch.bmm) is needed
-        energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
-        # queries shape: (N, query_len,  heads, heads_dim)
-        # keys shape: (N, key_len,  heads, heads_dim)
+        # Compute energy without einsum
+        energy = torch.matmul(queries.transpose(1, 2), keys.transpose(1, 2).transpose(2, 3))
+        # queries shape: (N, heads, query_len, heads_dim)
+        # keys shape: (N, heads, heads_dim, key_len)
         # energy shape (N, heads, query_len, key_len)
 
         if mask is not None:
-            energy = energy.masked_fill(mask == 0, float("-1e20"))              # minus infinity (very small value)
-                                                                                # minus infinity will be set to 0 on softmax
+            energy = energy.masked_fill(mask == 0, float("-1e20"))  # minus infinity
 
-        attention = torch.softmax(energy / (self.embed_size ** (1/2)), dim=3)
+        attention = F.softmax(energy / (self.embed_size ** (1/2)), dim=-1)
 
-        # n (batch size), heads, query_len, l (dimension we want to multiply across)
-        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(
-            N, query_len, self.heads*self.head_dim
-        )                                
+        # Compute output using matrix product state decomposition
+        out = torch.matmul(attention, values.transpose(1, 2)).transpose(1, 2)
         # attention shape: (N, heads, query_len, key_len)
-        # values shape: (N, value_len, heads, heads_dim)
-        # out shape: (N, query_len, heads, head_dim) then flatten last 2 dimensions
+        # values shape: (N, heads, value_len, heads_dim)
+        # out shape: (N, query_len, heads, head_dim)
 
-        out = self.fc_out(out)              # maps embed size
+        out = out.reshape(N, query_len, self.heads*self.head_dim)
+        
+        out = self.fc_out(out)  # maps embed size
         return out
 
 
@@ -243,6 +275,7 @@ class Transformer(nn.Module):
     def forward(self, src, trg):
         src_mask = self.make_src_mask(src)
         trg_mask = self.make_trg_mask(trg)
+
         enc_src = self.encoder(src, src_mask)
         out = self.decoder(trg, enc_src, src_mask, trg_mask)
 
